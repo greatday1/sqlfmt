@@ -1,26 +1,24 @@
-import asyncio
 import codecs
-import concurrent.futures
 import locale
 import os
 import re
 import subprocess
 import sys
+from concurrent.futures import ProcessPoolExecutor
 from functools import partial
 from glob import glob
 from itertools import zip_longest
 from pathlib import Path, PurePath
 from typing import (
-    Awaitable,
     Callable,
     Collection,
     Dict,
     Iterable,
+    Iterator,
     List,
     Optional,
     Set,
     Tuple,
-    TypeVar,
 )
 
 from tqdm import tqdm
@@ -33,8 +31,10 @@ from sqlfmt.query import Query
 from sqlfmt.query_formatter import QueryFormatter
 from sqlfmt.report import STDIN_PATH, Report, SqlFormatResult
 
-T = TypeVar("T")
-R = TypeVar("R")
+# Spawning workers and re-importing sqlfmt in each costs ~0.15-0.3s, which
+# only pays for itself at roughly 100 typical files (measured on 10 cores,
+# Python 3.10 and 3.14). Below that, a single process finishes first.
+_MIN_POOL_FILES = 100
 
 
 def format_string(source_string: str, mode: Mode) -> str:
@@ -60,7 +60,7 @@ def format_string(source_string: str, mode: Mode) -> str:
 def run(
     files: Collection[Path],
     mode: Mode,
-    callback: Optional[Callable[[Awaitable[SqlFormatResult]], None]] = None,
+    callback: Optional[Callable[[SqlFormatResult], None]] = None,
 ) -> Report:
     """
     Runs sqlfmt on all files in Collection of Paths (files), using the specified Mode.
@@ -108,7 +108,7 @@ def get_matching_paths(paths: Iterable[Path], mode: Mode) -> Set[Path]:
 
 def initialize_progress_bar(
     total: int, mode: Mode, force_progress_bar: bool = False
-) -> Tuple[tqdm, Callable[[Awaitable[SqlFormatResult]], None]]:
+) -> Tuple[tqdm, Callable[[SqlFormatResult], None]]:
     """
     Return a callable that can be used with api.run to display a progress bar
     that updates after each file is formatted.
@@ -127,7 +127,7 @@ def initialize_progress_bar(
         total=total, leave=False, disable=disable, delay=0.5, unit="file"
     )
 
-    def progress_callback(_: Awaitable[SqlFormatResult]) -> None:
+    def progress_callback(_: SqlFormatResult) -> None:
         progress_bar.update()
 
     return progress_bar, progress_callback
@@ -197,13 +197,13 @@ def _format_many(
     paths: Collection[Path],
     cache: Cache,
     mode: Mode,
-    callback: Optional[Callable[[Awaitable[SqlFormatResult]], None]] = None,
+    callback: Optional[Callable[[SqlFormatResult], None]] = None,
 ) -> List[SqlFormatResult]:
     """
     Runs sqlfmt on all files in a collection of paths, using the specified mode.
 
-    If there are multiple paths and the mode allows it, uses asyncio's implementation
-    of multiprocessing. Otherwise, reverts to single-processing behavior
+    If there are at least _MIN_POOL_FILES cache misses and the mode allows it,
+    formats them in a process pool. Otherwise, formats them in this process
 
     Returns a list of SqlFormatResults. Does not write formatted Queries back to disk
     """
@@ -226,38 +226,28 @@ def _format_many(
             cache_misses.append(path)
 
     format_func = partial(_format_one, mode=mode)
-    if len(cache_misses) > 1 and not mode.single_process:
-        results.extend(
-            asyncio.run(_multiprocess_map(format_func, cache_misses, callback=callback))
-        )
-    else:
-        results.extend((map(format_func, cache_misses)))
+    use_pool = len(cache_misses) >= _MIN_POOL_FILES and not mode.single_process
+    for result in _map(format_func, cache_misses, use_pool):
+        results.append(result)
+        if callback:
+            callback(result)
 
     return results
 
 
-async def _multiprocess_map(
-    func: Callable[[T], R],
-    seq: Iterable[T],
-    callback: Optional[Callable[[Awaitable[R]], None]] = None,
-) -> List[R]:
+def _map(
+    func: Callable[[Path], SqlFormatResult], paths: List[Path], use_pool: bool
+) -> Iterator[SqlFormatResult]:
     """
-    Using multiple processes, creates a Future for each application of func to
-    an item in seq, then gathers all Futures and returns the result.
-
-    Provides a similar interface to the map() built-in, but executes in multiple
-    processes.
+    Yields func(path) for each path, in a process pool if use_pool
     """
-    loop = asyncio.get_event_loop()
-    with concurrent.futures.ProcessPoolExecutor() as pool:
-        tasks = []
-        for item in seq:
-            future = loop.run_in_executor(pool, func, item)
-            if callback:
-                future.add_done_callback(callback)
-            tasks.append(future)
-        results: List[R] = await asyncio.gather(*tasks)
-    return results
+    if not use_pool:
+        yield from map(func, paths)
+        return
+    # one huge file can take longer than all the others combined; if it
+    # starts last, every other worker idles while it finishes
+    with ProcessPoolExecutor() as pool:
+        yield from pool.map(func, sorted(paths, key=_file_size, reverse=True))
 
 
 def _format_one(path: Path, mode: Mode) -> SqlFormatResult:
@@ -284,6 +274,13 @@ def _format_one(path: Path, mode: Mode) -> SqlFormatResult:
             utf_bom=utf_bom,
             exception=e,
         )
+
+
+def _file_size(path: Path) -> int:
+    try:
+        return path.stat().st_size
+    except OSError:  # e.g., stdin; _format_one reports real read errors
+        return 0
 
 
 def _update_source_files(results: Iterable[SqlFormatResult]) -> None:
