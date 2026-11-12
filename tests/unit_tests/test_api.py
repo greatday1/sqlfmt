@@ -383,16 +383,24 @@ def test_run_on_nothing(all_output_modes: Mode) -> None:
 def test_run_single_process_does_not_use_multiprocessing(
     unformatted_dir: Path, single_process_mode: Mode, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    # confirm that we do not call _multiprocess_map; if we do,
+    # confirm that we do not create a process pool; if we do,
     # this will raise
     files = get_matching_paths([unformatted_dir], single_process_mode)
-    monkeypatch.delattr("sqlfmt.api._multiprocess_map")
+    monkeypatch.setattr("sqlfmt.api._MIN_POOL_FILES", 2)
+    monkeypatch.delattr("sqlfmt.api.ProcessPoolExecutor")
     _ = run(files=files, mode=single_process_mode)
 
 
+@pytest.mark.parametrize("min_pool_files", [2, 10_000])
 def test_run_with_callback(
-    capsys: Any, unformatted_dir: Path, default_mode: Mode
+    capsys: Any,
+    unformatted_dir: Path,
+    default_mode: Mode,
+    monkeypatch: pytest.MonkeyPatch,
+    min_pool_files: int,
 ) -> None:
+    monkeypatch.setattr("sqlfmt.api._MIN_POOL_FILES", min_pool_files)
+
     def print_dot(_: Any) -> None:
         print(".", end="", flush=True)
 
