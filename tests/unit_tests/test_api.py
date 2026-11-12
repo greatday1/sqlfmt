@@ -1,6 +1,7 @@
 import codecs
 import io
 import os
+import subprocess
 from pathlib import Path
 from typing import Any, List, Set, Type
 
@@ -135,6 +136,32 @@ def test_file_discovery_with_excludes_no_root(
         os.chdir(cwd)
 
     assert res == sql_jinja_files
+
+
+@pytest.fixture
+def git_repo(tmp_path: Path) -> Path:
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    (tmp_path / ".gitignore").write_text("ignored/\n")
+    (tmp_path / "ignored").mkdir()
+    (tmp_path / "ignored" / "ignored.sql").touch()
+    (tmp_path / "nested").mkdir()
+    (tmp_path / "nested" / "kept.sql").touch()
+    return tmp_path
+
+
+def test_file_discovery_skips_gitignored_files(
+    default_mode: Mode, git_repo: Path
+) -> None:
+    res = get_matching_paths([git_repo], default_mode)
+    assert res == {git_repo / "nested" / "kept.sql"}
+
+
+def test_file_discovery_includes_explicit_gitignored_files(
+    default_mode: Mode, git_repo: Path
+) -> None:
+    ignored = git_repo / "ignored" / "ignored.sql"
+    res = get_matching_paths([git_repo, ignored], default_mode)
+    assert res == {git_repo / "nested" / "kept.sql", ignored}
 
 
 def test_format_empty_string(all_output_modes: Mode) -> None:

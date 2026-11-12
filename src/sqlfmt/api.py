@@ -2,6 +2,9 @@ import asyncio
 import codecs
 import concurrent.futures
 import locale
+import os
+import re
+import subprocess
 import sys
 from functools import partial
 from glob import glob
@@ -94,25 +97,11 @@ def get_matching_paths(paths: Iterable[Path], mode: Mode) -> Set[Path]:
     its directories) and are not excluded by the mode's exclude glob
     """
     include_set = _get_included_paths(paths, mode)
-    exclude_set = set()
-
-    if mode.exclude:
-        for s in mode.exclude:
-            if PurePath(s).is_absolute():
-                exclude_set.update([Path(g) for g in glob(s, recursive=True)])
-            else:
-                exclude_root = mode.exclude_root or Path.cwd()
-                try:
-                    # Prefer glob.glob() to Path.glob() here, even though the
-                    # latter would be more concise, since Path.glob() does not
-                    # resolve symlinks properly in Python <3.13
-                    exclude_set.update(
-                        [Path(g) for g in glob(str(exclude_root / s), recursive=True)]
-                    )
-                except IndexError:
-                    # for some reason Path.glob(".") raises an index error,
-                    # although glob.glob(".") returns ["."]
-                    pass
+    exclude_set: Set[Path] = set()
+    for pattern in mode.exclude:
+        if not PurePath(pattern).is_absolute():
+            pattern = str((mode.exclude_root or Path.cwd()) / pattern)
+        exclude_set |= _glob_matches(pattern, include_set)
 
     return include_set - exclude_set
 
@@ -144,11 +133,13 @@ def initialize_progress_bar(
     return progress_bar, progress_callback
 
 
-def _get_included_paths(paths: Iterable[Path], mode: Mode) -> Set[Path]:
+def _get_included_paths(
+    paths: Iterable[Path], mode: Mode, use_git: bool = True
+) -> Set[Path]:
     """
     Takes a list of absolute paths (files or directories) and a mode as an input, and
     yields paths to individual files that match the input paths (or are contained in
-    its directories)
+    its directories). Directories inside a git work tree skip gitignored files.
     """
     include_set = set()
     for p in paths:
@@ -157,9 +148,49 @@ def _get_included_paths(paths: Iterable[Path], mode: Mode) -> Set[Path]:
         elif p.is_file() and str(p).endswith(tuple(mode.SQL_EXTENSIONS)):
             include_set.add(p)
         elif p.is_dir():
-            include_set |= _get_included_paths(p.iterdir(), mode)
+            children = _git_ls_files(p) if use_git else None
+            if children is None:
+                # not a git work tree; don't shell out again for every subdirectory
+                include_set |= _get_included_paths(p.iterdir(), mode, use_git=False)
+            else:
+                # git lists symlinked dirs and submodules as single entries, so
+                # they still go through the is_dir() branch above
+                include_set |= _get_included_paths(children, mode)
 
     return include_set
+
+
+def _git_ls_files(directory: Path) -> Optional[List[Path]]:
+    """
+    Returns the files under directory that git doesn't ignore, or None if
+    git isn't installed or directory isn't in a git work tree
+    """
+    try:
+        proc = subprocess.run(
+            ["git", "ls-files", "-z", "--cached", "--others", "--exclude-standard"],
+            cwd=directory,
+            capture_output=True,
+            check=True,
+        )
+    except (OSError, subprocess.CalledProcessError):
+        return None
+    return [directory / f for f in os.fsdecode(proc.stdout).split("\0") if f]
+
+
+def _glob_matches(pattern: str, candidates: Set[Path]) -> Set[Path]:
+    """
+    Returns the paths that match the glob pattern. Matches candidates in memory
+    where possible, since globbing the filesystem walks every directory under
+    the pattern's root (including .venv, node_modules, etc.)
+    """
+    if sys.version_info >= (3, 13):
+        from glob import translate
+
+        # include_hidden=False matches glob.glob(): ** doesn't descend into
+        # hidden directories and wildcards don't match leading dots
+        regex = re.compile(translate(pattern, recursive=True, include_hidden=False))
+        return {p for p in candidates if regex.match(str(p))}
+    return {Path(g) for g in glob(pattern, recursive=True)}
 
 
 def _format_many(
