@@ -197,7 +197,7 @@ def _format_many(
     format_func = partial(_format_one, mode=mode)
     if len(cache_misses) > 1 and not mode.single_process:
         results.extend(
-            asyncio.run(_multiprocess_map(format_func, paths, callback=callback))
+            asyncio.run(_multiprocess_map(format_func, cache_misses, callback=callback))
         )
     else:
         results.extend((map(format_func, cache_misses)))

@@ -17,6 +17,7 @@ from sqlfmt.api import (
     initialize_progress_bar,
     run,
 )
+from sqlfmt.cache import _get_cache_info
 from sqlfmt.exception import (
     SqlfmtBracketError,
     SqlfmtEquivalenceError,
@@ -171,6 +172,17 @@ def test_format_many_preformatted(
             for raw, res in zip(preformatted_files, results, strict=True)
         ]
     ), "Result stored a source path that doesn't match the raw path passed to api"
+
+
+def test_format_many_skips_cache_hits(
+    unformatted_files: List[Path], default_mode: Mode
+) -> None:
+    hit, *misses = unformatted_files
+    cache = {hit.resolve(): _get_cache_info(hit)}
+    results = _format_many(unformatted_files, cache, default_mode)
+
+    formatted = sorted(res.source_path for res in results if not res.from_cache)
+    assert formatted == sorted(misses)
 
 
 def test_format_many_unformatted(
