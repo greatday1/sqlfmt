@@ -288,7 +288,10 @@ MAIN = [
     Rule(
         name="create_clone",
         priority=2015,
-        pattern=group(CREATE_CLONABLE + r"\s+.+?\s+clone") + group(r"\W", r"$"),
+        # [^;] keeps the search inside the current statement. With .+? (and
+        # DOTALL), every create table without a clone scanned to the end of
+        # the file, and a clone in any later statement matched
+        pattern=group(CREATE_CLONABLE + r"\s+[^;]+?\s+clone") + group(r"\W", r"$"),
         action=partial(
             actions.handle_nonreserved_top_level_keyword,
             action=partial(
