@@ -229,10 +229,16 @@ class Node:
         prev = (
             self.previous_node.previous_node if self.previous_node is not None else None
         )
-        while prev and prev.depth >= self.depth:
-            if prev.depth == self.depth and prev.is_the_between_operator:
+        # this walks back over every node in the clause, so compute each
+        # depth once
+        depth = self.depth
+        while prev:
+            prev_depth = prev.depth
+            if prev_depth < depth:
+                break
+            elif prev_depth == depth and prev.is_the_between_operator:
                 return True
-            elif prev.depth == self.depth and prev.is_boolean_operator:
+            elif prev_depth == depth and prev.is_boolean_operator:
                 break
             else:
                 prev = prev.previous_node
