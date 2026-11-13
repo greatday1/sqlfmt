@@ -10,6 +10,12 @@ EOL = group(NEWLINE, r"$")
 
 JINJA_START = group(r"\{[{%#]")
 
+# Prefix for rules that are a long alternation of keywords. Rules are compiled
+# behind a greedy whitespace prefix, so on a miss re retries every alternative
+# once per whitespace character it backs off; checking for a letter first
+# turns each of those retries into a single character-class test.
+WORD_START = r"(?=[a-z])"
+
 # The leading lookahead lists every character an alternative below can start
 # with (string prefixes, quotes, $, backtick). re tries each alternative in
 # turn, so without it a miss costs six failed attempts; with it, most
