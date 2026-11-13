@@ -1,11 +1,11 @@
 import codecs
 import io
 import os
+import subprocess
 from pathlib import Path
-from typing import Any, List, Set, Type
+from typing import List, Set, Type
 
 import pytest
-from tqdm import tqdm
 
 from sqlfmt.api import (
     _format_many,
@@ -14,9 +14,9 @@ from sqlfmt.api import (
     _update_source_files,
     format_string,
     get_matching_paths,
-    initialize_progress_bar,
     run,
 )
+from sqlfmt.cache import _get_cache_info
 from sqlfmt.exception import (
     SqlfmtBracketError,
     SqlfmtEquivalenceError,
@@ -136,6 +136,32 @@ def test_file_discovery_with_excludes_no_root(
     assert res == sql_jinja_files
 
 
+@pytest.fixture
+def git_repo(tmp_path: Path) -> Path:
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    (tmp_path / ".gitignore").write_text("ignored/\n")
+    (tmp_path / "ignored").mkdir()
+    (tmp_path / "ignored" / "ignored.sql").touch()
+    (tmp_path / "nested").mkdir()
+    (tmp_path / "nested" / "kept.sql").touch()
+    return tmp_path
+
+
+def test_file_discovery_skips_gitignored_files(
+    default_mode: Mode, git_repo: Path
+) -> None:
+    res = get_matching_paths([git_repo], default_mode)
+    assert res == {git_repo / "nested" / "kept.sql"}
+
+
+def test_file_discovery_includes_explicit_gitignored_files(
+    default_mode: Mode, git_repo: Path
+) -> None:
+    ignored = git_repo / "ignored" / "ignored.sql"
+    res = get_matching_paths([git_repo, ignored], default_mode)
+    assert res == {git_repo / "nested" / "kept.sql", ignored}
+
+
 def test_format_empty_string(all_output_modes: Mode) -> None:
     source = expected = ""
     actual = format_string(source, all_output_modes)
@@ -171,6 +197,17 @@ def test_format_many_preformatted(
             for raw, res in zip(preformatted_files, results, strict=True)
         ]
     ), "Result stored a source path that doesn't match the raw path passed to api"
+
+
+def test_format_many_skips_cache_hits(
+    unformatted_files: List[Path], default_mode: Mode
+) -> None:
+    hit, *misses = unformatted_files
+    cache = {hit.resolve(): _get_cache_info(hit)}
+    results = _format_many(unformatted_files, cache, default_mode)
+
+    formatted = sorted(res.source_path for res in results if not res.from_cache)
+    assert formatted == sorted(misses)
 
 
 def test_format_many_unformatted(
@@ -344,59 +381,12 @@ def test_run_on_nothing(all_output_modes: Mode) -> None:
 def test_run_single_process_does_not_use_multiprocessing(
     unformatted_dir: Path, single_process_mode: Mode, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    # confirm that we do not call _multiprocess_map; if we do,
+    # confirm that we do not create a process pool; if we do,
     # this will raise
     files = get_matching_paths([unformatted_dir], single_process_mode)
-    monkeypatch.delattr("sqlfmt.api._multiprocess_map")
+    monkeypatch.setattr("sqlfmt.api._MIN_POOL_FILES", 2)
+    monkeypatch.delattr("sqlfmt.api.ProcessPoolExecutor")
     _ = run(files=files, mode=single_process_mode)
-
-
-def test_run_with_callback(
-    capsys: Any, unformatted_dir: Path, default_mode: Mode
-) -> None:
-    def print_dot(_: Any) -> None:
-        print(".", end="", flush=True)
-
-    files = get_matching_paths([unformatted_dir], default_mode)
-    expected_dots = len(files)
-
-    _ = run(files=files, mode=default_mode, callback=print_dot)
-    captured = capsys.readouterr()
-
-    assert "." * expected_dots in captured.out
-
-
-def test_initialize_progress_bar(default_mode: Mode) -> None:
-    total = 100
-    progress_bar, progress_callback = initialize_progress_bar(
-        total=total, mode=default_mode, force_progress_bar=True
-    )
-    assert progress_bar
-    assert isinstance(progress_bar, tqdm)
-    assert progress_bar.format_dict.get("n") == 0
-    assert progress_bar.format_dict.get("total") == total
-
-    assert progress_callback is not None
-    progress_callback("foo")  # type: ignore
-    assert progress_bar.format_dict.get("n") == 1
-
-
-def test_initialize_disabled_progress_bar(no_progressbar_mode: Mode) -> None:
-    total = 100
-    progress_bar, progress_callback = initialize_progress_bar(
-        total=total, mode=no_progressbar_mode, force_progress_bar=True
-    )
-    # a disabled progress bar's elapsed timer will not count up,
-    # and calling update() will not increment n
-    assert progress_bar
-    assert isinstance(progress_bar, tqdm)
-    assert progress_bar.format_dict.get("n") == 0
-    assert progress_bar.format_dict.get("total") == total
-    assert progress_bar.format_dict.get("elapsed") == 0
-
-    assert progress_callback is not None
-    progress_callback("foo")  # type: ignore
-    assert progress_bar.format_dict.get("n") == 0
 
 
 def test_perform_safety_check(default_mode: Mode) -> None:

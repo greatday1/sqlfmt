@@ -1,26 +1,25 @@
-import asyncio
 import codecs
-import concurrent.futures
 import locale
+import os
+import re
+import subprocess
 import sys
+from concurrent.futures import ProcessPoolExecutor
 from functools import partial
-from glob import glob
+from glob import translate
 from itertools import zip_longest
 from pathlib import Path, PurePath
 from typing import (
-    Awaitable,
     Callable,
     Collection,
     Dict,
     Iterable,
+    Iterator,
     List,
     Optional,
     Set,
     Tuple,
-    TypeVar,
 )
-
-from tqdm import tqdm
 
 from sqlfmt.analyzer import Analyzer
 from sqlfmt.cache import Cache, check_cache, clear_cache, load_cache, write_cache
@@ -30,8 +29,10 @@ from sqlfmt.query import Query
 from sqlfmt.query_formatter import QueryFormatter
 from sqlfmt.report import STDIN_PATH, Report, SqlFormatResult
 
-T = TypeVar("T")
-R = TypeVar("R")
+# Spawning workers and re-importing sqlfmt in each costs ~0.15-0.3s, which
+# only pays for itself at roughly 100 typical files (measured on 10 cores,
+# Python 3.10 and 3.14). Below that, a single process finishes first.
+_MIN_POOL_FILES = 100
 
 
 def format_string(source_string: str, mode: Mode) -> str:
@@ -57,15 +58,12 @@ def format_string(source_string: str, mode: Mode) -> str:
 def run(
     files: Collection[Path],
     mode: Mode,
-    callback: Optional[Callable[[Awaitable[SqlFormatResult]], None]] = None,
 ) -> Report:
     """
     Runs sqlfmt on all files in Collection of Paths (files), using the specified Mode.
 
     Modifies sql files in place, by default. Check or diff Mode do not modify files,
     they only create a Report.
-
-    If a callback is provided, will execute the callback after each file is formatted.
 
     Returns a Report that can be queried or printed.
     """
@@ -76,7 +74,7 @@ def run(
     else:
         cache = load_cache()
 
-    results = _format_many(files, cache, mode, callback=callback)
+    results = _format_many(files, cache, mode)
 
     report = Report(results, mode)
 
@@ -94,61 +92,22 @@ def get_matching_paths(paths: Iterable[Path], mode: Mode) -> Set[Path]:
     its directories) and are not excluded by the mode's exclude glob
     """
     include_set = _get_included_paths(paths, mode)
-    exclude_set = set()
-
-    if mode.exclude:
-        for s in mode.exclude:
-            if PurePath(s).is_absolute():
-                exclude_set.update([Path(g) for g in glob(s, recursive=True)])
-            else:
-                exclude_root = mode.exclude_root or Path.cwd()
-                try:
-                    # Prefer glob.glob() to Path.glob() here, even though the
-                    # latter would be more concise, since Path.glob() does not
-                    # resolve symlinks properly in Python <3.13
-                    exclude_set.update(
-                        [Path(g) for g in glob(str(exclude_root / s), recursive=True)]
-                    )
-                except IndexError:
-                    # for some reason Path.glob(".") raises an index error,
-                    # although glob.glob(".") returns ["."]
-                    pass
+    exclude_set: Set[Path] = set()
+    for pattern in mode.exclude:
+        if not PurePath(pattern).is_absolute():
+            pattern = str((mode.exclude_root or Path.cwd()) / pattern)
+        exclude_set |= _glob_matches(pattern, include_set)
 
     return include_set - exclude_set
 
 
-def initialize_progress_bar(
-    total: int, mode: Mode, force_progress_bar: bool = False
-) -> Tuple[tqdm, Callable[[Awaitable[SqlFormatResult]], None]]:
-    """
-    Return a callable that can be used with api.run to display a progress bar
-    that updates after each file is formatted.
-
-    Pass force_progress_bar to enable the progress bar, even on non-TTY
-    terminals (this is handy for testing the progress bar).
-    """
-    if mode.no_progressbar:
-        disable = True
-    elif force_progress_bar:
-        disable = False
-    else:
-        # will be disabled on non-TTY envs, enabled otherwise
-        disable = None
-    progress_bar: tqdm = tqdm(
-        total=total, leave=False, disable=disable, delay=0.5, unit="file"
-    )
-
-    def progress_callback(_: Awaitable[SqlFormatResult]) -> None:
-        progress_bar.update()
-
-    return progress_bar, progress_callback
-
-
-def _get_included_paths(paths: Iterable[Path], mode: Mode) -> Set[Path]:
+def _get_included_paths(
+    paths: Iterable[Path], mode: Mode, use_git: bool = True
+) -> Set[Path]:
     """
     Takes a list of absolute paths (files or directories) and a mode as an input, and
     yields paths to individual files that match the input paths (or are contained in
-    its directories)
+    its directories). Directories inside a git work tree skip gitignored files.
     """
     include_set = set()
     for p in paths:
@@ -157,22 +116,57 @@ def _get_included_paths(paths: Iterable[Path], mode: Mode) -> Set[Path]:
         elif p.is_file() and str(p).endswith(tuple(mode.SQL_EXTENSIONS)):
             include_set.add(p)
         elif p.is_dir():
-            include_set |= _get_included_paths(p.iterdir(), mode)
+            children = _git_ls_files(p) if use_git else None
+            if children is None:
+                # not a git work tree; don't shell out again for every subdirectory
+                include_set |= _get_included_paths(p.iterdir(), mode, use_git=False)
+            else:
+                # git lists symlinked dirs and submodules as single entries, so
+                # they still go through the is_dir() branch above
+                include_set |= _get_included_paths(children, mode)
 
     return include_set
+
+
+def _git_ls_files(directory: Path) -> Optional[List[Path]]:
+    """
+    Returns the files under directory that git doesn't ignore, or None if
+    git isn't installed or directory isn't in a git work tree
+    """
+    try:
+        proc = subprocess.run(
+            ["git", "ls-files", "-z", "--cached", "--others", "--exclude-standard"],
+            cwd=directory,
+            capture_output=True,
+            check=True,
+        )
+    except (OSError, subprocess.CalledProcessError):
+        return None
+    return [directory / f for f in os.fsdecode(proc.stdout).split("\0") if f]
+
+
+def _glob_matches(pattern: str, candidates: Set[Path]) -> Set[Path]:
+    """
+    Returns the paths that match the glob pattern. Matches candidates in memory,
+    since globbing the filesystem walks every directory under the pattern's root
+    (including .venv, node_modules, etc.)
+    """
+    # include_hidden=False matches glob.glob(): ** doesn't descend into
+    # hidden directories and wildcards don't match leading dots
+    regex = re.compile(translate(pattern, recursive=True, include_hidden=False))
+    return {p for p in candidates if regex.match(str(p))}
 
 
 def _format_many(
     paths: Collection[Path],
     cache: Cache,
     mode: Mode,
-    callback: Optional[Callable[[Awaitable[SqlFormatResult]], None]] = None,
 ) -> List[SqlFormatResult]:
     """
     Runs sqlfmt on all files in a collection of paths, using the specified mode.
 
-    If there are multiple paths and the mode allows it, uses asyncio's implementation
-    of multiprocessing. Otherwise, reverts to single-processing behavior
+    If there are at least _MIN_POOL_FILES cache misses and the mode allows it,
+    formats them in a process pool. Otherwise, formats them in this process
 
     Returns a list of SqlFormatResults. Does not write formatted Queries back to disk
     """
@@ -195,38 +189,25 @@ def _format_many(
             cache_misses.append(path)
 
     format_func = partial(_format_one, mode=mode)
-    if len(cache_misses) > 1 and not mode.single_process:
-        results.extend(
-            asyncio.run(_multiprocess_map(format_func, paths, callback=callback))
-        )
-    else:
-        results.extend((map(format_func, cache_misses)))
+    use_pool = len(cache_misses) >= _MIN_POOL_FILES and not mode.single_process
+    results.extend(_map(format_func, cache_misses, use_pool))
 
     return results
 
 
-async def _multiprocess_map(
-    func: Callable[[T], R],
-    seq: Iterable[T],
-    callback: Optional[Callable[[Awaitable[R]], None]] = None,
-) -> List[R]:
+def _map(
+    func: Callable[[Path], SqlFormatResult], paths: List[Path], use_pool: bool
+) -> Iterator[SqlFormatResult]:
     """
-    Using multiple processes, creates a Future for each application of func to
-    an item in seq, then gathers all Futures and returns the result.
-
-    Provides a similar interface to the map() built-in, but executes in multiple
-    processes.
+    Yields func(path) for each path, in a process pool if use_pool
     """
-    loop = asyncio.get_event_loop()
-    with concurrent.futures.ProcessPoolExecutor() as pool:
-        tasks = []
-        for item in seq:
-            future = loop.run_in_executor(pool, func, item)
-            if callback:
-                future.add_done_callback(callback)
-            tasks.append(future)
-        results: List[R] = await asyncio.gather(*tasks)
-    return results
+    if not use_pool:
+        yield from map(func, paths)
+        return
+    # one huge file can take longer than all the others combined; if it
+    # starts last, every other worker idles while it finishes
+    with ProcessPoolExecutor() as pool:
+        yield from pool.map(func, sorted(paths, key=_file_size, reverse=True))
 
 
 def _format_one(path: Path, mode: Mode) -> SqlFormatResult:
@@ -253,6 +234,13 @@ def _format_one(path: Path, mode: Mode) -> SqlFormatResult:
             utf_bom=utf_bom,
             exception=e,
         )
+
+
+def _file_size(path: Path) -> int:
+    try:
+        return path.stat().st_size
+    except OSError:  # e.g., stdin; _format_one reports real read errors
+        return 0
 
 
 def _update_source_files(results: Iterable[SqlFormatResult]) -> None:

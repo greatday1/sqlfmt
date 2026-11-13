@@ -28,7 +28,6 @@ class Mode:
     reset_cache: bool = False
     verbose: bool = False
     quiet: bool = False
-    no_progressbar: bool = False
     no_color: bool = False
     force_color: bool = False
 
