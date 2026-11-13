@@ -10,6 +10,7 @@ from sqlfmt.rules.common import (
     CREATE_FUNCTION,
     CREATE_WAREHOUSE,
     PRAGMA_SET_CALL,
+    WORD_START,
     group,
 )
 from sqlfmt.rules.core import CORE as CORE
@@ -71,7 +72,8 @@ MAIN = [
     Rule(
         name="unterm_keyword",
         priority=1050,
-        pattern=group(
+        pattern=WORD_START
+        + group(
             r"with(\s+recursive)?",
             (
                 r"select(\s+(as\s+struct|as\s+value))?"
@@ -141,7 +143,8 @@ MAIN = [
     Rule(
         name="word_operator",
         priority=1100,
-        pattern=group(
+        pattern=WORD_START
+        + group(
             r"as",
             r"(not\s+)?between",
             r"cube",
@@ -243,7 +246,8 @@ MAIN = [
     Rule(
         name="set_operator",
         priority=1320,
-        pattern=group(
+        pattern=WORD_START
+        + group(
             r"((inner|((full|left)(\s+outer)?))\s+)?"
             r"(union|intersect|except|minus)"
             r"(\s+(all|distinct))?"
@@ -331,7 +335,8 @@ MAIN = [
     Rule(
         name="unsupported_ddl",
         priority=2999,
-        pattern=group(
+        pattern=WORD_START
+        + group(
             r"alter",
             r"attach\s+rls\s+policy",
             r"cache\s+table",

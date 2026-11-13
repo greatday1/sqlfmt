@@ -33,7 +33,12 @@ UNSUPPORTED = [
         # similarly, a semicolon inside a comment doesn't terminate an expression,
         # so we need to stop lexing at the start of a comment to let the higher-priority
         # comment rule consume that comment.
-        pattern=group(rf"(?:{SQL_QUOTED_EXP}|[^;\n])+?")
+        # the lazy loop retries the terminator after every item, so the first
+        # alternative swallows runs of characters that can neither start a
+        # terminator (whitespace, ;, comment or jinja start) nor a quoted
+        # expression (quotes, $, @, and the r/b/u/x string prefixes) in a
+        # single step.
+        pattern=group(rf"(?:[^\s;'\"`$@#/{{\-rbux]+|{SQL_QUOTED_EXP}|[^;\n])+?")
         + group(r"\s*")
         + group(r";", NEWLINE, SQL_COMMENT_START, JINJA_START, r"$"),
         action=partial(

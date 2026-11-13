@@ -1,6 +1,6 @@
 import re
 from dataclasses import dataclass, field
-from typing import List, Optional
+from typing import Dict, List, Optional, Tuple
 
 from sqlfmt.comment import Comment
 from sqlfmt.exception import SqlfmtBracketError, SqlfmtParsingError
@@ -8,7 +8,7 @@ from sqlfmt.line import Line
 from sqlfmt.node import Node
 from sqlfmt.node_manager import NodeManager
 from sqlfmt.query import Query
-from sqlfmt.rule import Rule
+from sqlfmt.rule import MAYBE_WHITESPACES, Rule
 
 
 @dataclass
@@ -28,6 +28,10 @@ class Analyzer:
     line_buffer: List[Line] = field(default_factory=list)
     rule_stack: List[List[Rule]] = field(default_factory=list)
     pos: int = 0
+    _dispatch_rules: Optional[List[Rule]] = field(default=None, init=False, repr=False)
+    _dispatch: Dict[str, List[Rule]] = field(
+        default_factory=dict, init=False, repr=False
+    )
 
     @property
     def previous_node(self) -> Optional[Node]:
@@ -127,7 +131,14 @@ class Analyzer:
 
         Mutates the analyzer's buffers and pos
         """
-        for rule in self.rules:
+        if self.rules is not self._dispatch_rules:
+            self._dispatch_rules = self.rules
+            self._dispatch = _dispatch_table(self.rules)
+        # only try the rules that can match the first char after the whitespace
+        # that every rule skips; anything else (non-ASCII, EOF) tries them all
+        start = _WHITESPACES.match(source_string, self.pos).end()  # type: ignore[union-attr]
+        candidates = self._dispatch.get(source_string[start : start + 1], self.rules)
+        for rule in candidates:
             match = rule.program.match(source_string, self.pos)
             if match:
                 rule.action(self, source_string, match)
@@ -203,3 +214,26 @@ class Analyzer:
             return outer_epos
         else:
             return pos + end
+
+
+_WHITESPACES = re.compile(MAYBE_WHITESPACES)
+_DISPATCH_TABLES: Dict[Tuple[int, ...], Tuple[List[Rule], Dict[str, List[Rule]]]] = {}
+
+
+def _dispatch_table(rules: List[Rule]) -> Dict[str, List[Rule]]:
+    """
+    Map each ASCII char to the rules (in priority order) that could match
+    when it is the first char after MAYBE_WHITESPACES. Cached per ruleset,
+    since push_rules and pop_rules swap rulesets constantly.
+    """
+    key = tuple(map(id, rules))
+    if key not in _DISPATCH_TABLES:
+        if len(_DISPATCH_TABLES) > 64:  # only reached if callers keep making Rules
+            _DISPATCH_TABLES.clear()
+        table = {
+            chr(i): [r for r in rules if r.first is None or chr(i) in r.first]
+            for i in range(128)
+        }
+        # keep the rules alive so their ids can't be reused by another ruleset
+        _DISPATCH_TABLES[key] = (list(rules), table)
+    return _DISPATCH_TABLES[key][1]
