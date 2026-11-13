@@ -109,7 +109,11 @@ CORE = [
         # https://spark.apache.org/docs/latest/sql-ref-literals.html#fractional-literals-syntax
         name="number",
         priority=401,
-        pattern=group(
+        # every alternative starts with a sign, dot, or digit; checking that
+        # first spares re from retrying all five per backed-off whitespace
+        # char (see WORD_START)
+        pattern=r"(?=[-+.\d])"
+        + group(
             r"0x[0-9a-f]+",
             r"0o[0-7]+",
             r"0b[0-1]+",
