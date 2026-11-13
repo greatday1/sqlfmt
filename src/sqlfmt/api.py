@@ -21,8 +21,6 @@ from typing import (
     Tuple,
 )
 
-from tqdm import tqdm
-
 from sqlfmt.analyzer import Analyzer
 from sqlfmt.cache import Cache, check_cache, clear_cache, load_cache, write_cache
 from sqlfmt.exception import SqlfmtEquivalenceError, SqlfmtError, SqlfmtUnicodeError
@@ -60,15 +58,12 @@ def format_string(source_string: str, mode: Mode) -> str:
 def run(
     files: Collection[Path],
     mode: Mode,
-    callback: Optional[Callable[[SqlFormatResult], None]] = None,
 ) -> Report:
     """
     Runs sqlfmt on all files in Collection of Paths (files), using the specified Mode.
 
     Modifies sql files in place, by default. Check or diff Mode do not modify files,
     they only create a Report.
-
-    If a callback is provided, will execute the callback after each file is formatted.
 
     Returns a Report that can be queried or printed.
     """
@@ -79,7 +74,7 @@ def run(
     else:
         cache = load_cache()
 
-    results = _format_many(files, cache, mode, callback=callback)
+    results = _format_many(files, cache, mode)
 
     report = Report(results, mode)
 
@@ -104,33 +99,6 @@ def get_matching_paths(paths: Iterable[Path], mode: Mode) -> Set[Path]:
         exclude_set |= _glob_matches(pattern, include_set)
 
     return include_set - exclude_set
-
-
-def initialize_progress_bar(
-    total: int, mode: Mode, force_progress_bar: bool = False
-) -> Tuple[tqdm, Callable[[SqlFormatResult], None]]:
-    """
-    Return a callable that can be used with api.run to display a progress bar
-    that updates after each file is formatted.
-
-    Pass force_progress_bar to enable the progress bar, even on non-TTY
-    terminals (this is handy for testing the progress bar).
-    """
-    if mode.no_progressbar:
-        disable = True
-    elif force_progress_bar:
-        disable = False
-    else:
-        # will be disabled on non-TTY envs, enabled otherwise
-        disable = None
-    progress_bar: tqdm = tqdm(
-        total=total, leave=False, disable=disable, delay=0.5, unit="file"
-    )
-
-    def progress_callback(_: SqlFormatResult) -> None:
-        progress_bar.update()
-
-    return progress_bar, progress_callback
 
 
 def _get_included_paths(
@@ -193,7 +161,6 @@ def _format_many(
     paths: Collection[Path],
     cache: Cache,
     mode: Mode,
-    callback: Optional[Callable[[SqlFormatResult], None]] = None,
 ) -> List[SqlFormatResult]:
     """
     Runs sqlfmt on all files in a collection of paths, using the specified mode.
@@ -223,10 +190,7 @@ def _format_many(
 
     format_func = partial(_format_one, mode=mode)
     use_pool = len(cache_misses) >= _MIN_POOL_FILES and not mode.single_process
-    for result in _map(format_func, cache_misses, use_pool):
-        results.append(result)
-        if callback:
-            callback(result)
+    results.extend(_map(format_func, cache_misses, use_pool))
 
     return results
 

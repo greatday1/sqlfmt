@@ -78,22 +78,16 @@ def reset_cache_mode(unset_no_color_env: None) -> Mode:
 
 
 @pytest.fixture
-def no_progressbar_mode(unset_no_color_env: None) -> Mode:
-    return Mode(no_progressbar=True)
-
-
-@pytest.fixture
 def single_process_mode(unset_no_color_env: None) -> Mode:
     return Mode(single_process=True)
 
 
-@pytest.fixture(params=product([True, False], repeat=4))
+@pytest.fixture(params=product([True, False], repeat=3))
 def all_output_modes(request: Any, unset_no_color_env: None) -> Mode:
     return Mode(
         check=request.param[0],
         diff=request.param[1],
         single_process=request.param[2],
-        no_progressbar=request.param[3],
     )
 
 
