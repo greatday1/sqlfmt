@@ -10,7 +10,11 @@ EOL = group(NEWLINE, r"$")
 
 JINJA_START = group(r"\{[{%#]")
 
-SQL_QUOTED_EXP = group(
+# The leading lookahead lists every character an alternative below can start
+# with (string prefixes, quotes, $, backtick). re tries each alternative in
+# turn, so without it a miss costs six failed attempts; with it, most
+# positions are rejected by a single character-class test.
+SQL_QUOTED_EXP = r"(?=[rbux@'\"`$])" + group(
     # tripled single quotes (optionally raw/bytes).
     #
     # The body cannot be a lazy .*? — that closes on the FIRST ''' it can reach,
