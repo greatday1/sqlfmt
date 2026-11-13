@@ -105,29 +105,39 @@ class NodeManager:
         Returns two lists, for open_brackets and open_jinja_blocks
         """
 
+        # nodes share these lists until one changes, so never mutate them in
+        # place: copying both lists for every node was a hot spot
         if previous_node is None:
-            open_brackets = []
-            open_jinja_blocks = []
+            open_brackets: List[Node] = []
+            open_jinja_blocks: List[Node] = []
         else:
-            open_brackets = previous_node.open_brackets.copy()
-            open_jinja_blocks = previous_node.open_jinja_blocks.copy()
+            open_brackets = previous_node.open_brackets
+            open_jinja_blocks = previous_node.open_jinja_blocks
 
             # add the previous node to the list of open brackets or jinja blocks
-            if previous_node.is_unterm_keyword or previous_node.is_opening_bracket:
-                open_brackets.append(previous_node)
-            elif previous_node.is_opening_jinja_block:
-                open_jinja_blocks.append(previous_node)
+            # (inlines Node.is_unterm_keyword etc.; this runs for every token)
+            prev_type = previous_node.token.type
+            if prev_type is TokenType.UNTERM_KEYWORD or prev_type.is_opening_bracket:
+                open_brackets = [*open_brackets, previous_node]
+            elif prev_type in (
+                TokenType.JINJA_BLOCK_START,
+                TokenType.JINJA_BLOCK_KEYWORD,
+            ):
+                open_jinja_blocks = [*open_jinja_blocks, previous_node]
 
-        # if the token should reduce the depth of the node, pop
+        # if the token should reduce the depth of the node, drop
         # the last item(s) off open_brackets or open_jinja_blocks
         if token.type in (TokenType.UNTERM_KEYWORD, TokenType.SET_OPERATOR):
             if open_brackets and open_brackets[-1].is_unterm_keyword:
-                _ = open_brackets.pop()
+                open_brackets = open_brackets[:-1]
         elif token.type in (TokenType.BRACKET_CLOSE, TokenType.STATEMENT_END):
             try:
-                last_bracket = open_brackets.pop()
+                last_bracket = open_brackets[-1]
                 if last_bracket.is_unterm_keyword:
-                    last_bracket = open_brackets.pop()
+                    last_bracket = open_brackets[-2]
+                    open_brackets = open_brackets[:-2]
+                else:
+                    open_brackets = open_brackets[:-1]
             except IndexError as e:
                 raise SqlfmtBracketError(
                     f"Closing bracket '{token.token}' found at "
@@ -137,7 +147,8 @@ class NodeManager:
                 self.raise_on_mismatched_bracket(token, last_bracket)
         elif token.type is TokenType.JINJA_BLOCK_END:
             try:
-                start_tag = open_jinja_blocks.pop()
+                start_tag = open_jinja_blocks[-1]
+                open_jinja_blocks = open_jinja_blocks[:-1]
                 self.raise_on_mismatched_jinja_tags(token, start_tag)
             except IndexError as e:
                 raise SqlfmtBracketError(
@@ -264,14 +275,13 @@ class NodeManager:
         Manage the formatting_disabled property for the node to be created from
         the token and previous node.
         """
+        # shared with previous_node until it changes, like open_brackets
         formatting_disabled = (
-            previous_node.formatting_disabled.copy()
-            if previous_node is not None
-            else []
+            previous_node.formatting_disabled if previous_node is not None else []
         )
 
         if token.type in (TokenType.FMT_OFF, TokenType.DATA):
-            formatting_disabled.append(token)
+            formatting_disabled = [*formatting_disabled, token]
 
         if (
             formatting_disabled
@@ -282,7 +292,7 @@ class NodeManager:
                 TokenType.DATA,
             )
         ):
-            formatting_disabled.pop()
+            formatting_disabled = formatting_disabled[:-1]
 
         return formatting_disabled
 
