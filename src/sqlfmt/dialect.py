@@ -1,5 +1,5 @@
 from abc import ABC, abstractmethod
-from typing import List
+from typing import List, Tuple
 
 from sqlfmt.analyzer import Analyzer
 from sqlfmt.node_manager import NodeManager
@@ -35,6 +35,13 @@ class Dialect(ABC):
             node_manager=NodeManager(self.case_sensitive_names),
         )
         return analyzer
+
+    def __reduce__(self) -> Tuple[type, Tuple[()]]:
+        # Mode is pickled for every file sent to a pool worker. Pickling RULES
+        # would hand each file fresh copies of every Rule, so the analyzer's
+        # per-Rule caches would be rebuilt (and kept) once per file. Dialects
+        # are stateless, so rebuild from the class and share module-level Rules.
+        return (type(self), ())
 
 
 class Polyglot(Dialect):
