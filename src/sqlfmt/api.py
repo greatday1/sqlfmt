@@ -6,7 +6,7 @@ import subprocess
 import sys
 from concurrent.futures import ProcessPoolExecutor
 from functools import partial
-from glob import glob
+from glob import translate
 from itertools import zip_longest
 from pathlib import Path, PurePath
 from typing import (
@@ -166,7 +166,7 @@ def _git_ls_files(directory: Path) -> Optional[List[Path]]:
             capture_output=True,
             check=True,
         )
-    except (OSError, subprocess.CalledProcessError):
+    except OSError, subprocess.CalledProcessError:
         return None
     return [directory / f for f in os.fsdecode(proc.stdout).split("\0") if f]
 
@@ -175,12 +175,8 @@ def _glob_matches(pattern: str, candidates: Set[Path]) -> Set[Path]:
     """
     Returns the candidates that match the glob pattern
     """
-    if sys.version_info >= (3, 13):
-        from glob import translate
-
-        regex = re.compile(translate(pattern, recursive=True, include_hidden=False))
-        return {p for p in candidates if regex.match(str(p))}
-    return {Path(g) for g in glob(pattern, recursive=True)}
+    regex = re.compile(translate(pattern, recursive=True, include_hidden=False))
+    return {p for p in candidates if regex.match(str(p))}
 
 
 def _format_many(
