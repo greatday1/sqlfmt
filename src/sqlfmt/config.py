@@ -1,16 +1,10 @@
-import sys
+import tomllib
 from pathlib import Path
 from typing import Dict, List, Optional, Set, Union
 
 from sqlfmt.exception import SqlfmtConfigError
 from sqlfmt.mode import Mode
 from sqlfmt.report import STDIN_PATH
-
-if sys.version_info >= (3, 11):
-    import tomllib
-else:
-    import tomli as tomllib
-
 
 Config = Dict[str, Union[bool, int, List[str], str, Path]]
 
