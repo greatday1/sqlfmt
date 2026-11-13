@@ -30,8 +30,8 @@ def run_cli_command(commands: List[str]) -> subprocess.CompletedProcess:
 @pytest.mark.parametrize(
     "cmd",
     [
-        "sqlfmt --no-progressbar",
-        "python -m sqlfmt --no-progressbar",
+        "sqlfmt",
+        "python -m sqlfmt",
     ],
 )
 def test_click_cli_runner_is_equivalent_to_py_subprocess(
@@ -165,14 +165,6 @@ def test_preformatted_clickhouse(
     sqlfmt_runner: CliRunner, preformatted_dir: Path
 ) -> None:
     args = f"{preformatted_dir.as_posix()} --check --dialect clickhouse"
-    results = sqlfmt_runner.invoke(sqlfmt_main, args=args)
-    assert results.exit_code == 0
-
-
-def test_preformatted_no_progressbar(
-    sqlfmt_runner: CliRunner, preformatted_dir: Path
-) -> None:
-    args = f"{preformatted_dir.as_posix()} --check --no-progressbar"
     results = sqlfmt_runner.invoke(sqlfmt_main, args=args)
     assert results.exit_code == 0
 
