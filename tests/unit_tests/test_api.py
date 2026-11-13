@@ -3,10 +3,9 @@ import io
 import os
 import subprocess
 from pathlib import Path
-from typing import Any, List, Set, Type
+from typing import List, Set, Type
 
 import pytest
-from tqdm import tqdm
 
 from sqlfmt.api import (
     _format_many,
@@ -15,7 +14,6 @@ from sqlfmt.api import (
     _update_source_files,
     format_string,
     get_matching_paths,
-    initialize_progress_bar,
     run,
 )
 from sqlfmt.cache import _get_cache_info
@@ -389,61 +387,6 @@ def test_run_single_process_does_not_use_multiprocessing(
     monkeypatch.setattr("sqlfmt.api._MIN_POOL_FILES", 2)
     monkeypatch.delattr("sqlfmt.api.ProcessPoolExecutor")
     _ = run(files=files, mode=single_process_mode)
-
-
-@pytest.mark.parametrize("min_pool_files", [2, 10_000])
-def test_run_with_callback(
-    capsys: Any,
-    unformatted_dir: Path,
-    default_mode: Mode,
-    monkeypatch: pytest.MonkeyPatch,
-    min_pool_files: int,
-) -> None:
-    monkeypatch.setattr("sqlfmt.api._MIN_POOL_FILES", min_pool_files)
-
-    def print_dot(_: Any) -> None:
-        print(".", end="", flush=True)
-
-    files = get_matching_paths([unformatted_dir], default_mode)
-    expected_dots = len(files)
-
-    _ = run(files=files, mode=default_mode, callback=print_dot)
-    captured = capsys.readouterr()
-
-    assert "." * expected_dots in captured.out
-
-
-def test_initialize_progress_bar(default_mode: Mode) -> None:
-    total = 100
-    progress_bar, progress_callback = initialize_progress_bar(
-        total=total, mode=default_mode, force_progress_bar=True
-    )
-    assert progress_bar
-    assert isinstance(progress_bar, tqdm)
-    assert progress_bar.format_dict.get("n") == 0
-    assert progress_bar.format_dict.get("total") == total
-
-    assert progress_callback is not None
-    progress_callback("foo")  # type: ignore
-    assert progress_bar.format_dict.get("n") == 1
-
-
-def test_initialize_disabled_progress_bar(no_progressbar_mode: Mode) -> None:
-    total = 100
-    progress_bar, progress_callback = initialize_progress_bar(
-        total=total, mode=no_progressbar_mode, force_progress_bar=True
-    )
-    # a disabled progress bar's elapsed timer will not count up,
-    # and calling update() will not increment n
-    assert progress_bar
-    assert isinstance(progress_bar, tqdm)
-    assert progress_bar.format_dict.get("n") == 0
-    assert progress_bar.format_dict.get("total") == total
-    assert progress_bar.format_dict.get("elapsed") == 0
-
-    assert progress_callback is not None
-    progress_callback("foo")  # type: ignore
-    assert progress_bar.format_dict.get("n") == 0
 
 
 def test_perform_safety_check(default_mode: Mode) -> None:
