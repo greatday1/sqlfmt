@@ -1,5 +1,6 @@
 import re
 from enum import IntEnum
+from functools import lru_cache
 from typing import Callable, List
 
 from sqlfmt.node import Node
@@ -88,6 +89,13 @@ class OperatorPrecedence(IntEnum):
 
     @staticmethod
     def _from_word_operator(node: Node) -> "OperatorPrecedence":
+        return OperatorPrecedence._word_operator_precedence(node.value)
+
+    @staticmethod
+    @lru_cache
+    def _word_operator_precedence(value: str) -> "OperatorPrecedence":
+        # cached because the merger asks again for every attempt to merge
+        # the same segments, and each miss runs up to 15 regexes
         mapping = [
             (OperatorPrecedence.AS, [r"as"]),
             (
@@ -121,7 +129,7 @@ class OperatorPrecedence(IntEnum):
                 re.compile(f"{pattern}$", flags=re.IGNORECASE)
                 for pattern in pattern_list
             ]
-            if any([prog.match(node.value) for prog in programs]):
+            if any([prog.match(value) for prog in programs]):
                 return precedence
         else:
             return OperatorPrecedence.OTHER

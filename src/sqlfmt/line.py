@@ -73,7 +73,9 @@ class Line:
         The depth of the start of this line
         """
         if self.nodes:
-            return (len(self.open_brackets), len(self.open_jinja_blocks))
+            # skip the open_brackets properties; this is hot in segmenting
+            first = self.nodes[0]
+            return (len(first.open_brackets), len(first.open_jinja_blocks))
         else:
             return (0, 0)
 
@@ -344,7 +346,8 @@ class Line:
                 return False
 
     def starts_new_segment(self, prev_segment_depth: Tuple[int, int]) -> bool:
-        if self.depth <= prev_segment_depth or self.depth[1] < prev_segment_depth[1]:
+        depth = self.depth
+        if depth <= prev_segment_depth or depth[1] < prev_segment_depth[1]:
             # if this line starts with a closing bracket,
             # we want to include that closing bracket
             # in the same segment as the first line.
@@ -352,7 +355,7 @@ class Line:
                 self.closes_bracket_from_previous_line
                 or self.closes_simple_jinja_block_from_previous_line
                 or self.is_blank_line
-            ) and self.depth == prev_segment_depth:
+            ) and depth == prev_segment_depth:
                 return False
             else:
                 return True

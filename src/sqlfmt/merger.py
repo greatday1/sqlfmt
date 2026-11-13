@@ -25,6 +25,9 @@ class LineMerger:
         if len(lines) <= 1:
             return lines
 
+        if self._is_definitely_too_long(lines):
+            raise CannotMergeException("Merged line is too long")
+
         nodes, comments = self._extract_components(lines)
 
         merged_line = Line.from_nodes(
@@ -43,6 +46,43 @@ class LineMerger:
         )
 
         return leading_blank_lines + [merged_line] + trailing_blank_lines
+
+    def _is_definitely_too_long(self, lines: List[Line]) -> bool:
+        """
+        Most merge attempts are on lines that are far too long to merge, and
+        extracting and rendering all of their nodes just to find that out made
+        merging quadratic-ish. This stops counting as soon as the merged line
+        must be longer than line_length. It only answers True when the nodes
+        it has seen contain no line breaks, so they all render on the merged
+        line's first printed line; otherwise it gives up and returns False.
+        Whatever else would make the merge fail, it fails either way.
+        """
+        if any(line.formatting_disabled for line in lines):
+            # those render raw tokens, which can be shorter than prefix + value
+            return False
+        nodes = (node for line in lines for node in line.nodes if not node.is_newline)
+        first = next(nodes, None)
+        if (
+            first is None
+            # the merged line strips leading spaces, so only count what
+            # follows a first node that has something other than spaces
+            or not first.value.strip(" ")
+            or not first.prefix.isprintable()
+            or not first.value.isprintable()
+        ):
+            return False
+        budget = self.mode.line_length - 4 * (
+            len(first.open_brackets) + len(first.open_jinja_blocks)
+        )
+        for node in nodes:
+            # isprintable() is False for every char str.splitlines() breaks on
+            text = node.prefix + node.value
+            if not text.isprintable():
+                return False
+            budget -= len(text)
+            if budget < 0:
+                return True
+        return False
 
     def safe_create_merged_line(self, lines: List[Line]) -> List[Line]:
         try:

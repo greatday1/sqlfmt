@@ -87,6 +87,14 @@ class Node:
         """
         return len(str(self))
 
+    def __bool__(self) -> bool:
+        """
+        Truthiness (e.g., `if not prev_node`) would otherwise fall back to
+        __len__ and render the node. Same result, minus the f-string: a node
+        with an empty prefix and value (an empty jinja DATA block) stays falsy.
+        """
+        return bool(self.prefix or self.value)
+
     @property
     def depth(self) -> Tuple[int, int]:
         """
@@ -221,10 +229,16 @@ class Node:
         prev = (
             self.previous_node.previous_node if self.previous_node is not None else None
         )
-        while prev and prev.depth >= self.depth:
-            if prev.depth == self.depth and prev.is_the_between_operator:
+        # this walks back over every node in the clause, so compute each
+        # depth once
+        depth = self.depth
+        while prev:
+            prev_depth = prev.depth
+            if prev_depth < depth:
+                break
+            elif prev_depth == depth and prev.is_the_between_operator:
                 return True
-            elif prev.depth == self.depth and prev.is_boolean_operator:
+            elif prev_depth == depth and prev.is_boolean_operator:
                 break
             else:
                 prev = prev.previous_node
