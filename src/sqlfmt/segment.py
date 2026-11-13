@@ -18,15 +18,15 @@ def create_segments_from_lines(lines: Sequence[Line]) -> List["Segment"]:
     j = 0
 
     while True:
-        if not lines[j:]:
+        if j >= len(lines):
             return segments
 
         target_depth = lines[j].depth
         start_idx = j + 2 if lines[j].is_standalone_operator else j + 1
-        for i, line in enumerate(lines[start_idx:], start=start_idx):
+        for i in range(start_idx, len(lines)):
             # scan through the lines until we get back to the
             # depth of the first line
-            if line.starts_new_segment(target_depth):
+            if lines[i].starts_new_segment(target_depth):
                 segments.append(Segment(lines[j:i]))
                 j = i
                 break
