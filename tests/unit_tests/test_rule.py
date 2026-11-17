@@ -558,3 +558,26 @@ def test_rule_priorities_unique_within_ruleset(ruleset: List[Rule]) -> None:
 def test_rule_patterns_unique_within_ruleset(ruleset: List[Rule]) -> None:
     pattern_counts = Counter([rule.pattern for rule in ruleset])
     assert max(pattern_counts.values()) == 1
+
+
+@pytest.mark.parametrize(
+    "pattern,first",
+    [
+        (r"select", "Ss"),
+        (r"(a|b)c", "AaBb"),
+        (r"x?y", "XxYy"),
+        (r"(?=[a-c])\w+", "AaBbCc"),
+        (r"(?!a)b", "Bb"),
+        (r"\bk", "Kk"),
+        (r"\$\d", "$"),
+        (r"[0-2_]", "012_"),
+        (r"x*", None),  # nullable
+        (r"\s*select", None),  # starts inside the whitespace prefix
+        (r"[^;]", None),
+        (r".", None),
+        ("\u212a", None),  # KELVIN SIGN matches k under IGNORECASE
+    ],
+)
+def test_rule_first(pattern: str, first: str) -> None:
+    rule = Rule(name="r", priority=0, pattern=pattern, action=lambda *_: None)
+    assert rule.first == (None if first is None else frozenset(first))
